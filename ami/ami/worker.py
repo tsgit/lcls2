@@ -8,12 +8,33 @@ import threading
 from mpi4py import MPI
 import multiprocessing as mp
 from ami.manager import Manager
-from ami.graph import Graph, GraphConfigError, GraphRuntimeError
 from ami.comm import Collector, ResultStore
 from ami.data import MsgTypes, DataTypes, Transitions, Occurrences, Message, Datagram, Transition, StaticSource
 
 
+
+def build_dep_tree(json):
+    """
+    Take a json representation of a configuration and produce a DAG
+    that shows dependencies (ie outputs) instead of inputs.
+    """
+
+    
+
+
+    return
+
+def dep_resolve(node, resolved):
+    print node.name
+    for edge in node.edges:
+        if edge not in resolved:
+            dep_resolve(edge, resolved)
+    resolved.append(node)
+    return resolved
+   
+
 class Worker(object):
+
     def __init__(self, idnum, src, collector_rank):
         """
         idnum : int
@@ -21,81 +42,30 @@ class Worker(object):
         src : object
             object with an events() method that is an iterable (like psana.DataSource)
         """
+
         self.idnum = idnum
         self.src = src
         self.collector_rank = collector_rank
-        self.store = ResultStore(self.collector_rank)
-        self.graph = Graph(self.store)
+
+        return
 
     def run(self):
-        partition = self.src.partition()
-        self.store.message(MsgTypes.Transition, 
-                           Transition(Transitions.Allocate, partition))
-        for name, dtype in partition:
-            self.store.create(name, dtype)
+
         for msg in self.src.events():
+
             # check to see if the graph has been reconfigured after update
-            if msg.mtype == MsgTypes.Occurrence and msg.payload == Occurrences.Heartbeat:
+            if msg.mtype == MsgTypes.Occurrence and \
+               msg.payload == Occurrences.Heartbeat:
 
                 if MPI.COMM_WORLD.Iprobe(source=0, tag=1):
-                    new_graph = MPI.COMM_WORLD.recv(source=0, tag=1)
-                    self.graph.update(new_graph)
+                    self.graph = MPI.COMM_WORLD.recv(source=0, tag=1)
                     print("worker%d: Received new configuration"%self.idnum)
-                    try:
-                        self.graph.configure()
-                        print("worker%d: Configuration complete"%self.idnum)
-                    except GraphConfigError as graph_err:
-                        print("worker%d: Configuration failed reverting to previous config:"%self.idnum, graph_err)
-                        # if this fails we just die
-                        self.graph.revert()
-                    sys.stdout.flush()
-                    self.new_graph_available = False
-                self.store.send(msg)
+                else:
+                    print("worker%d: got unknown message?")
+
             elif msg.mtype == MsgTypes.Datagram:
-                updates = []
-                for dgram in msg.payload:
-                    self.store.put_dgram(dgram)
-                    updates.append(dgram.name)
-                try:
-                    self.graph.execute(updates)
-                except GraphRuntimeError as graph_err:
-                    print("worker%s: Failure encountered executing graph:"%self.idnum, graph_err)
-                    return 1
-                self.store.collect()
-            else:
-                self.store.forward(msg)
+                pass # handle
 
-
-#class NodeCollector(Collector):
-#    def __init__(self, num_workers, col_handler):
-#        super(__class__, self).__init__("collector", col_handler)
-#        self.num_workers = num_workers
-#        # this does not really work - need a better way
-#        self.counts = { MsgTypes.Transition: 0, MsgTypes.Occurrence: 0 }
-#        self.set_handlers(self.store_msg)
-#        self.upstream = ResultStore(col_handler)
-#
-#    def store_msg(self, msg):
-#        if msg.mtype == MsgTypes.Transition:
-#            print("%s: Seen Transition of type"%self.name, msg.payload.ttype)
-#            self.counts[MsgTypes.Transition] += 1
-#            if self.counts[MsgTypes.Transition] == self.num_workers:
-#                if msg.payload.ttype == Transitions.Allocate:
-#                    for name, dtype in msg.payload.payload:
-#                        self.upstream.create(name, dtype)
-#                #self.upstream.forward(msg)
-#                self.counts[MsgTypes.Transition] = 0
-#        elif msg.mtype == MsgTypes.Occurrence:
-#            print("%s: Seen Occurence of type"%self.name, msg.payload)
-#            self.counts[MsgTypes.Occurrence] += 1
-#            if self.counts[MsgTypes.Occurrence] == self.num_workers:
-#                if msg.payload == Occurrences.Heartbeat:
-#                    self.upstream.collect()
-#                #self.upstream.forward(msg)
-#                self.counts[MsgTypes.Occurrence] = 0
-#        elif msg.mtype == MsgTypes.Datagram:
-#            print(msg.payload)
-#            #self.upstream.put_dgram(msg.payload)
 
                
 def run_worker(num, source, collector_rank=0):
