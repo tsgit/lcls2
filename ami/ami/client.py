@@ -1,3 +1,4 @@
+import re
 import zmq
 import sys
 import time
@@ -13,7 +14,8 @@ from PyQt5.QtCore import pyqtSlot, QTimer, QRect
 import pyqtgraph as pg
 
 from ami.data import DataTypes
-from ami.operation import ROI
+from ami.comm import Ports
+from ami.operation import ROINode, EvalNode
 
 
 class CommunicationHandler(object):
@@ -47,6 +49,7 @@ class ScalarWidget(QLCDNumber):
         self.topic = topic
         self.timer = QTimer()
         self.setGeometry(QRect(320, 180, 191, 81))
+        self.setDigitCount(10)
         self.setObjectName(topic)
         self.comm_handler = CommunicationHandler(host, port)
         self.timer.timeout.connect(self.get_scalar)
@@ -117,17 +120,74 @@ class AreaDetWidget(pg.ImageView):
     #@pyqtSlot(pg.ROI)
     def roi_updated(self, roi):
         graph = self.comm_handler.graph
-        roi = ROI(*roi.getAffineSliceParams(self.image, self.getImageItem()), (0,1))
-        graph["%s-roi"%self.topic] = { "optype": "ROI", "config": roi.export(), "inputs": [{"name": self.topic, "required": True}] }
+        roi = ROINode("%s-roi"%self.topic, *roi.getAffineSliceParams(self.image, self.getImageItem()), (0,1), self.topic)
+        graph[roi.name] = roi.export()
         self.comm_handler.update(graph)
         
 
+class Calculator(QWidget):
+    def __init__(self, comm, parent=None):
+        super(Calculator, self).__init__(parent)
+        self.setWindowTitle("Calculator")
+        self.comm = comm
+        self.move(280, 80)
+        self.resize(280,40)
+        self.field_parse = re.compile("\s+")
+
+        self.nameLabel = QLabel('Name:', self)
+        self.nameBox = QLineEdit(self)
+        self.inputsLabel = QLabel('Inputs:', self)
+        self.inputsBox = QLineEdit(self)
+        self.importsLabel = QLabel('Imports:', self)
+        self.importsBox = QLineEdit(self)
+        self.codeLabel = QLabel('Expression:', self)
+        self.codeBox = QLineEdit(self)
+        self.button = QPushButton('Apply', self)
+        self.button.clicked.connect(self.on_click)
+
+        self.calc_layout = QVBoxLayout(self)
+        self.calc_layout.addWidget(self.nameLabel)
+        self.calc_layout.addWidget(self.nameBox)
+        self.calc_layout.addWidget(self.inputsLabel)
+        self.calc_layout.addWidget(self.inputsBox)
+        self.calc_layout.addWidget(self.importsLabel)
+        self.calc_layout.addWidget(self.importsBox)
+        self.calc_layout.addWidget(self.codeLabel)
+        self.calc_layout.addWidget(self.codeBox)
+        self.calc_layout.addWidget(self.button)
+        self.setLayout(self.calc_layout)
+
+    def parse_inputs(self):
+        if self.inputsBox.text():
+            return self.field_parse.split(self.inputsBox.text())
+        else:
+            return []
+
+    def parse_imports(self):
+        if self.importsBox.text():
+            return self.field_parse.split(self.importsBox.text())
+        else:
+            return None
+
+    def make_graph_node(self):
+        node = EvalNode(self.importsBox.text(), self.codeBox.text(), *self.parse_inputs())
+        imports = self.parse_imports()
+        if imports is not None:
+            node.imports(*imports)
+        return node.export()
+
+    @pyqtSlot()
+    def on_click(self):
+        graph = self.comm.graph
+        graph[self.nameBox.text()] = self.make_graph_node()
+        self.comm.update(graph)
+
 class DetectorList(QListWidget):
     
-    def __init__(self, queue, host, port, parent=None):
+    def __init__(self, queue, comm_handler, parent=None):
         super(DetectorList, self).__init__(parent)
         self.queue = queue
-        self.comm_handler = CommunicationHandler(host, port)
+        self.comm_handler = comm_handler
         self.features = {}
         self.timer = QTimer()
         self.timer.timeout.connect(self.get_features)
@@ -175,12 +235,21 @@ class DetectorList(QListWidget):
 
 def run_list_window(queue, host, port, ami_save):
     app = QApplication(sys.argv)
-    amilist = DetectorList(queue, host, port)
+    comm_handler = CommunicationHandler(host, port)
+    amilist = DetectorList(queue, comm_handler)
     if ami_save is not None:
         amilist.load(ami_save)
     amilist.show()
+    calc = Calculator(comm_handler)
+    calc.show()
 
-    return app.exec_()
+    # wait for the qt app to exit
+    retval = app.exec_()
+
+    # send exit signal to master process
+    queue.put(("exit", None))
+
+    return retval
 
 
 def run_widget(queue, window_type, topic, host, port):
@@ -215,15 +284,15 @@ def main():
         '-H',
         '--host',
         default='localhost',
-        help='hostname of the AMII Manager'
+        help='hostname of the AMII Manager (default: localhost)'
     )
 
     parser.add_argument(
         '-p',
         '--port',
         type=int,
-        default=5556,
-        help='port for manager/client (GUI) communication'
+        default=Ports.Comm,
+        help='port for manager/client (GUI) communication (default: %d)'%Ports.Comm
     )
 
     parser.add_argument(
@@ -255,6 +324,9 @@ def main():
 
         while True:
             window_type, topic = queue.get()
+            if window_type == 'exit':
+                print("received exit signal - exiting!")
+                break;
             print("opening new widget:", window_type, topic)
             proc = mp.Process(target=run_widget, args=(queue, window_type, topic, args.host, args.port))
             proc.start()

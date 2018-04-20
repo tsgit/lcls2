@@ -1,6 +1,7 @@
 #include "psdaq/eb/Endpoint.hh"
 #include "psdaq/eb/BatchManager.hh"
 
+#include "psdaq/eb/EbLfServer.hh"
 #include "psdaq/eb/EbLfClient.hh"
 
 #include "psdaq/service/Routine.hh"
@@ -19,6 +20,7 @@
 #include <stdio.h>
 #include <unistd.h>
 #include <string.h>
+#include <assert.h>
 #include <climits>
 #include <bitset>
 #include <new>
@@ -34,15 +36,15 @@ static const int      core_base        = 6; // devXX, 8: accXX
 static const int      core_offset      = 2; // Allows Ctrb and EB to run on the same machine
 static const unsigned mon_period       = 1;          // Seconds
 static const unsigned default_id       = 0;          // Contributor's ID (< 64)
-static const unsigned max_peers        = 64;         // Maximum possible number of contributors
-static const unsigned port_base        = 32768;      // Base port Ctrb sends contributions on
+static const unsigned max_ctrbs        = 64;         // Maximum possible number of Contributors
+static const unsigned srv_port_base    = 32768 + max_ctrbs; // Base port Ctrb receives results       on
+static const unsigned clt_port_base    = 32768;             // Base port Ctrb sends    contributions on
 static const unsigned max_batches      = 2048;       // Maximum number of batches in circulation
-static const unsigned max_entries      = 512;        // < or = to batch_duration
+static const unsigned max_entries      = 64;        // < or = to batch_duration
 static const uint64_t batch_duration   = max_entries;// > or = to max_entries; power of 2; beam pulse ticks (1 uS)
 static const size_t   header_size      = sizeof(Dgram);
-static const size_t   input_extent     = 5; // Revisit: Number of "L3" input  data words
-//static const size_t   result_extent    = 2; // Revisit: Number of "L3" result data words
-static const size_t   result_extent    = input_extent;
+static const size_t   input_extent     = 3; // Revisit: Number of "L3" input  data words
+static const size_t   result_extent    = 3; // Revisit: Number of "L3" result data words
 static const size_t   max_contrib_size = header_size + input_extent  * sizeof(uint32_t);
 static const size_t   max_result_size  = header_size + result_extent * sizeof(uint32_t);
 static const uint64_t nanosecond       = 1000000000ul; // Nonconfigurable constant: don't change
@@ -115,18 +117,18 @@ namespace Pds {
                              public Routine
     {
     public:
-      TstContribOutlet(EbLfClient& client,
-                       unsigned    id,
-                       uint64_t    builders,
-                       uint64_t    duration,
-                       unsigned    maxBatches,
-                       unsigned    maxEntries,
-                       size_t      maxSize);
+      TstContribOutlet(std::vector<std::string>& addrs,
+                       std::vector<std::string>& ports,
+                       unsigned                  id,
+                       uint64_t                  builders,
+                       uint64_t                  duration,
+                       unsigned                  maxBatches,
+                       unsigned                  maxEntries,
+                       size_t                    maxSize);
       virtual ~TstContribOutlet();
     public:
       void        startup();
       void        shutdown();
-      int         connect();
     public:
       uint64_t    count() const { return _eventCount; }
     public:
@@ -135,7 +137,7 @@ namespace Pds {
       void        post(const Batch*);
     private:
       DrpSim                _drpSim;
-      EbLfClient&           _transport;
+      EbLfClient*           _transport;
       const unsigned        _id;
       const unsigned        _numEbs;
       unsigned*             _destinations;
@@ -156,19 +158,20 @@ namespace Pds {
     class TstContribInlet : public Routine
     {
     private:
-      size_t _calcBatchSize(unsigned maxEntries, size_t maxSize);
+      static size_t _calcBatchSize(unsigned maxEntries, size_t maxSize);
+      static void*  _allocBatchRegion(unsigned maxBatches, size_t maxBatchSize);
     public:
-      TstContribInlet(EbLfClient& client,
-                      unsigned    id,
-                      uint64_t    builders,
-                      unsigned    maxBatches,
-                      unsigned    maxEntries,
-                      size_t      maxSize);
-      virtual ~TstContribInlet() { }
+      TstContribInlet(const char*  addr,
+                      std::string& port,
+                      unsigned     id,
+                      uint64_t     builders,
+                      unsigned     maxBatches,
+                      unsigned     maxEntries,
+                      size_t       maxSize);
+      virtual ~TstContribInlet();
     public:
       void     startup(TstContribOutlet* outlet);
       void     shutdown();
-      int      connect();
     public:
       uint64_t count()        const { return _eventCount;   }
       size_t   maxBatchSize() const { return _maxBatchSize; }
@@ -180,7 +183,8 @@ namespace Pds {
       const unsigned    _id;
       const unsigned    _numEbs;
       const size_t      _maxBatchSize;
-      EbLfClient&       _transport;
+      void*             _region;
+      EbLfServer*       _transport;
       TstContribOutlet* _outlet;
     private:
       uint64_t          _eventCount;
@@ -277,26 +281,25 @@ const Dgram* DrpSim::genEvent()
   // Revisit: Here is where L3 trigger input information would be inserted into the datagram,
   //          whatever that will look like.  SmlD is nominally the right container for this.
   uint32_t* payload = (uint32_t*)idg->xtc.alloc(inputSize);
-  payload[0] = ts.tv_sec;           // Revisit: Some crud for now
-  payload[1] = ts.tv_nsec;          // Revisit: Some crud for now
-  payload[2] = ++cnt;               // Revisit: Some crud for now
-  payload[3] = _id;                 // Revisit: Some crud for now
-  payload[4] = idg->seq.pulseId().value() & 0xffffffffUL; // Revisit: Some crud for now
+  payload[0] = ++cnt;               // Revisit: Some crud for now
+  payload[1] = _id;                 // Revisit: Some crud for now
+  payload[2] = idg->seq.pulseId().value() & 0xffffffffUL; // Revisit: Some crud for now
 
   return idg;
 }
 
 
-TstContribOutlet::TstContribOutlet(EbLfClient& client,
-                                   unsigned    id,
-                                   uint64_t    builders,
-                                   uint64_t    duration,
-                                   unsigned    maxBatches,
-                                   unsigned    maxEntries,
-                                   size_t      maxSize) :
+TstContribOutlet::TstContribOutlet(std::vector<std::string>& addrs,
+                                   std::vector<std::string>& ports,
+                                   unsigned                  id,
+                                   uint64_t                  builders,
+                                   uint64_t                  duration,
+                                   unsigned                  maxBatches,
+                                   unsigned                  maxEntries,
+                                   size_t                    maxSize) :
   BatchManager (duration, maxBatches, maxEntries, maxSize),
   _drpSim      (maxBatches, maxEntries, maxSize, id),
-  _transport   (client),
+  _transport   (new EbLfClient(addrs, ports)),
   _id          (id),
   _numEbs      (std::bitset<64>(builders).count()),
   _destinations(new unsigned[_numEbs]),
@@ -305,7 +308,7 @@ TstContribOutlet::TstContribOutlet(EbLfClient& client,
   _inFlightOcc (0),
   _inFlightHist(__builtin_ctz(maxBatches), 1.0),
   _depTimeHist (12, double(1 << 16)/1000.),
-  _postTimeHist(12, double(1 <<  8)/1000.),
+  _postTimeHist(12, 1.0),
   _postCallHist(12, 1.0),
   _postPrevTime(std::chrono::steady_clock::now()),
   _running     (true),
@@ -318,9 +321,10 @@ TstContribOutlet::TstContribOutlet(EbLfClient& client,
     _destinations[i] = bit;
   }
 
-  if (_transport.prepareRmtMr(batchRegion(), batchRegionSize()))
+  const unsigned tmo(120);              // Seconds
+  if (_transport->connect(id, tmo, batchRegion(), batchRegionSize()))
   {
-    fprintf(stderr, "TstContribOutlet: Failed to prepare remote memory region\n");
+    fprintf(stderr, "TstContribOutlet: Transport connect failed\n");
     abort();
   }
 }
@@ -328,6 +332,8 @@ TstContribOutlet::TstContribOutlet(EbLfClient& client,
 TstContribOutlet::~TstContribOutlet()
 {
   delete [] _destinations;
+
+  if (_transport)  delete _transport;
 }
 
 void TstContribOutlet::startup()
@@ -355,34 +361,30 @@ void TstContribOutlet::post(const Batch* batch)
   size_t       extent = batch->extent();
   uint32_t     idx    = batch->index();
 
-  {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    int64_t dS(ts.tv_sec  - bdg->seq.stamp().seconds());
-    int64_t dN(ts.tv_nsec - bdg->seq.stamp().nanoseconds());
-    int64_t dT(dS * nanosecond + dN);
-
-    _depTimeHist.bump(dT >> 16);
-  }
-
   if (lverbose)
   {
     uint64_t pid    = bdg->seq.pulseId().value();
-    void*    rmtAdx = (void*)_transport.rmtAdx(dst, idx * maxBatchSize());
+    void*    rmtAdx = (void*)_transport->rmtAdx(dst, idx * maxBatchSize());
     printf("ContribOutlet posts %6ld        batch[%4d]    @ %16p, ts %014lx, sz %3zd to   EB %d %16p\n",
            _batchCount, idx, bdg, pid, extent, dst, rmtAdx);
   }
 
   auto t0 = std::chrono::steady_clock::now();
-  _transport.post(dst, bdg, extent, idx * maxBatchSize(), (_id << 24) + idx);
+  _transport->post(dst, bdg, extent, idx * maxBatchSize(), (_id << 24) + idx);
   auto t1 = std::chrono::steady_clock::now();
 
   ++_batchCount;
 
   {
-    int64_t dT = std::chrono::duration_cast<ns_t>(t1 - t0).count();
-    if (dT > 1048576)  printf("postTime = %ld\n", dT);
-    _postTimeHist.bump(dT >> 8);
+    auto d = std::chrono::seconds            { bdg->seq.stamp().seconds()     } +
+             std::chrono::nanoseconds        { bdg->seq.stamp().nanoseconds() };
+    std::chrono::steady_clock::time_point tp { std::chrono::duration_cast<std::chrono::steady_clock::duration>(d) };
+    int64_t dT(std::chrono::duration_cast<ns_t>(t0 - tp).count());
+    _depTimeHist.bump(dT >> 16);
+
+    dT = std::chrono::duration_cast<us_t>(t1 - t0).count();
+    if (dT > 4095)  printf("postTime = %ld us\n", dT);
+    _postTimeHist.bump(dT);
     _postCallHist.bump(std::chrono::duration_cast<us_t>(t0 - _postPrevTime).count());
     _postPrevTime = t0;
   }
@@ -458,34 +460,52 @@ void TstContribOutlet::routine()
   printf("Dumped post call rate histogram to ./%s\n", fs);
   _postCallHist.dump(fs);
 
+  _transport->shutdown();
+
   _task->destroy();
 }
 
 
-TstContribInlet::TstContribInlet(EbLfClient& client,
-                                 unsigned    id,
-                                 uint64_t    builders,
-                                 unsigned    maxBatches,
-                                 unsigned    maxEntries,
-                                 size_t      maxSize) :
+TstContribInlet::TstContribInlet(const char*  ifAddr,
+                                 std::string& port,
+                                 unsigned     id,
+                                 uint64_t     builders,
+                                 unsigned     maxBatches,
+                                 unsigned     maxEntries,
+                                 size_t       maxSize) :
   _id          (id),
   _numEbs      (std::bitset<64>(builders).count()),
   _maxBatchSize(_calcBatchSize(maxEntries, maxSize)),
-  _transport   (client),
+  _region      (_allocBatchRegion(maxBatches, _maxBatchSize)),
+  _transport   (new EbLfServer(ifAddr, port, _numEbs)),
   _outlet      (nullptr),
   _eventCount  (0),
-  _rttHist     (12, double(1 << 16)/1000.),
-  _pendTimeHist(12, double(1 <<  8)/1000.),
+  _rttHist     (12, 1.0), //double(1 << 16)/1000.),
+  _pendTimeHist(12, 1.0),
   _pendCallHist(12, 1.0),
   _pendPrevTime(std::chrono::steady_clock::now()),
   _running     (true),
   _task        (new Task(TaskObject("tInlet", 0, 0, 0, 0, 0)))
 {
-  if (_transport.prepareLclMr(maxBatches * _maxBatchSize, EbLfBase::PEERS_SHARE_BUFFERS))
+  size_t size = maxBatches * _maxBatchSize;
+
+  if (_region == nullptr)
   {
-    fprintf(stderr, "TstContribInlet: Failed to prepare local memory region\n");
+    fprintf(stderr, "No memory found for a result region of size %zd\n", size);
     abort();
   }
+
+  if (_transport->connect(id, _region, size, EbLfBase::PEERS_SHARE_BUFFERS))
+  {
+    fprintf(stderr, "TstContribInlet: Transport connect failed\n");
+    abort();
+  }
+}
+
+TstContribInlet::~TstContribInlet()
+{
+  if (_transport)  delete _transport;
+  if (_region)     free  (_region);
 }
 
 size_t TstContribInlet::_calcBatchSize(unsigned maxEntries, size_t maxSize)
@@ -494,6 +514,22 @@ size_t TstContribInlet::_calcBatchSize(unsigned maxEntries, size_t maxSize)
   size_t size      = sizeof(Dgram) + maxEntries * maxSize;
   size             = alignment * ((size + alignment - 1) / alignment);
   return size;
+}
+
+void* TstContribInlet::_allocBatchRegion(unsigned maxBatches, size_t maxBatchSize)
+{
+  size_t   alignment = sysconf(_SC_PAGESIZE);
+  size_t   size      = maxBatches * maxBatchSize;
+  assert((size & (alignment - 1)) == 0);
+  void*    region    = nullptr;
+  int      ret       = posix_memalign(&region, alignment, size);
+  if (ret)
+  {
+    perror("posix_memalign");
+    return nullptr;
+  }
+
+  return region;
 }
 
 void TstContribInlet::startup(TstContribOutlet* outlet)
@@ -523,13 +559,13 @@ void TstContribInlet::routine()
   {
     // Pend for a result datagram (batch) and process it.
     fi_cq_data_entry wc;
-    auto t0  = std::chrono::steady_clock::now();
-    if (_transport.pend(&wc))  continue;
-    auto t1  = std::chrono::steady_clock::now();
+    auto t0 = std::chrono::steady_clock::now();
+    if (_transport->pend(&wc))  continue;
+    auto t1 = std::chrono::steady_clock::now();
 
     unsigned     idx   = wc.data & 0x00ffffff;
     unsigned     srcId = wc.data >> 24;
-    const Dgram* bdg   = (const Dgram*)(_transport.lclAdx(srcId, idx * _maxBatchSize));
+    const Dgram* bdg   = (const Dgram*)(_transport->lclAdx(srcId, idx * _maxBatchSize));
 
     if (lverbose)
     {
@@ -542,21 +578,21 @@ void TstContribInlet::routine()
 
     if (bdg->env == _id)
     {
-      struct timespec ts;
-      clock_gettime(CLOCK_MONOTONIC, &ts);
-      int64_t dS(ts.tv_sec  - bdg->seq.stamp().seconds());
-      int64_t dN(ts.tv_nsec - bdg->seq.stamp().nanoseconds());
-      int64_t dT(dS * nanosecond + dN);
-
-      _rttHist.bump(dT >> 16);
+      auto d = std::chrono::seconds            { bdg->seq.stamp().seconds()     } +
+               std::chrono::nanoseconds        { bdg->seq.stamp().nanoseconds() };
+      std::chrono::steady_clock::time_point tp { std::chrono::duration_cast<std::chrono::steady_clock::duration>(d) };
+      int64_t dT(std::chrono::duration_cast<us_t>(t1 - tp).count());
+      _rttHist.bump(dT); // >> 16);
       //printf("In  Batch %014lx RTT  = %ld S, %ld ns\n", bdg->seq.pulseId().value(), dS, dN);
 
-      dT = std::chrono::duration_cast<ns_t>(t1 - t0).count();
-      if (dT > 1048576)  printf("pendTime = %ld\n", dT);
-      _pendTimeHist.bump(dT >> 8);
+      dT = std::chrono::duration_cast<us_t>(t1 - t0).count();
+      if (dT > 4095)  printf("pendTime = %ld us\n", dT);
+      _pendTimeHist.bump(dT);
       _pendCallHist.bump(std::chrono::duration_cast<us_t>(t0 - _pendPrevTime).count());
       _pendPrevTime = t0;
     }
+
+    _transport->postCompRecv(srcId);
 
     const Batch*       input  = _outlet->batch(idx);
     const Dgram*       result = (const Dgram*)bdg->xtc.payload();
@@ -588,6 +624,8 @@ void TstContribInlet::routine()
   printf("Dumped pend call rate histogram to ./%s\n", fs);
   _pendCallHist.dump(fs);
 
+  _transport->shutdown();
+
   _task->destroy();
 }
 
@@ -598,27 +636,17 @@ void TstContribInlet::_process(const Dgram* result, const Dgram* input)
 
   if (lcheck)
   {
-    uint32_t* buffer = (uint32_t*)result->xtc.payload();
+    uint32_t* payload = (uint32_t*)result->xtc.payload();
     if (_numEbs == 1)
     {
-      // Timestamps aren't coherent across multiple contributor instances
-      //static uint64_t _ts = 0;
-      //uint64_t         ts = buffer[0];
-      //ts = (ts << 32) + buffer[1];
-      //if (_ts > ts)
-      //{
-      //  ok = false;
-      //  printf("Timestamp didn't increase: previous = %016lx, current = %016lx\n", _ts, ts);
-      //}
-      //_ts = ts;
       static unsigned _counter = 0;
-      if (buffer[2] != _counter + 1)
+      if (payload[0] != _counter + 1)
       {
         ok = false;
         printf("Result counter didn't increase by 1: expected %08x, got %08x\n",
-               _counter + 1, buffer[2]);
+               _counter + 1, payload[0]);
       }
-      _counter = buffer[2];
+      _counter = payload[0];
       static uint64_t _pid = 0;
       if (_pid > pid)
       {
@@ -627,18 +655,18 @@ void TstContribInlet::_process(const Dgram* result, const Dgram* input)
       }
       _pid = pid;
     }
-    if ((pid & 0xffffffffUL) != buffer[4])
+    if ((pid & 0xffffffffUL) != payload[2])
     {
       ok = false;
       printf("Pulse ID mismatch: expected %08lx, got %08x\n",
-             pid & 0xffffffffUL, buffer[4]);
+             pid & 0xffffffffUL, payload[2]);
     }
     if (!ok)
     {
       printf("ContribInlet  found result   %16p, ts %014lx, sz %d, pyld:\n",
              result, pid, result->xtc.sizeofPayload());
       for (unsigned i = 0; i < result_extent; ++i)
-        printf(" %08x", buffer[i]);
+        printf(" %08x", payload[i]);
       printf("\n");
 
       abort();                          // Revisit
@@ -741,19 +769,24 @@ void sigHandler(int signal)
 void usage(char *name, char *desc)
 {
   fprintf(stderr, "Usage:\n");
-  fprintf(stderr, "  %s [OPTIONS] <builder_spec> [<builder_id> [...]]\n", name);
+  fprintf(stderr, "  %s [OPTIONS] <builder_spec> [<builder_spec> [...]]\n", name);
 
   if (desc)
     fprintf(stderr, "\n%s\n", desc);
 
-  fprintf(stderr, "\n<builder_id> must be in the range 0 - %d.\n", max_peers - 1);
+  fprintf(stderr, "\n<builder_spec> has the form '[<builder_id>:]<builder_addr>'\n");
+  fprintf(stderr, "\n<builder_id> must be in the range 0 - %d.\n", max_ctrbs - 1);
+  fprintf(stderr, "  If the ':' is omitted, <builder_id> will be given the\n");
+  fprintf(stderr, "  spec's positional value from 0 - %d, from left to right.\n", max_ctrbs - 1);
 
   fprintf(stderr, "\nOptions:\n");
 
-  fprintf(stderr, " %-20s %s (default: %s)\n",  "-A <interface_addr>",
-          "IP address of the interface to use", "libfabric's 'best' choice");
-  fprintf(stderr, " %-20s %s (default: %d)\n",  "-P <port>",
-          "Base port number to use",            port_base);
+  fprintf(stderr, " %-20s %s (default: %s)\n",        "-A <interface_addr>",
+          "IP address of the interface to use",       "libfabric's 'best' choice");
+  fprintf(stderr, " %-20s %s (default: %d)\n",        "-S <port>",
+          "Base port for sending contributions",      srv_port_base);
+  fprintf(stderr, " %-20s %s (default: %d)\n",        "-C <port>",
+          "Base port for receiving results",          clt_port_base);
 
   fprintf(stderr, " %-20s %s (default: %d)\n",        "-i <ID>",
           "Unique ID of this Contributor (0 - 63)",   default_id);
@@ -783,26 +816,30 @@ int main(int argc, char **argv)
 
   int      op, ret    = 0;
   unsigned id         = default_id;
-  unsigned portBase   = port_base;      // Port served by builders
+  char*    ifAddr     = nullptr;
+  unsigned srvBase    = srv_port_base;  // Port served to builders
+  unsigned cltBase    = clt_port_base;  // Port served by builders
   uint64_t duration   = batch_duration;
   unsigned maxBatches = max_batches;
   unsigned maxEntries = max_entries;
   unsigned monPeriod  = mon_period;
 
-  while ((op = getopt(argc, argv, "h?vcP:i:D:B:E:M:1:2:")) != -1)
+  while ((op = getopt(argc, argv, "h?vcA:S:C:i:D:B:E:M:1:2:")) != -1)
   {
     switch (op)
     {
-      case 'P':  portBase   = atoi(optarg);  break;
-      case 'i':  id         = atoi(optarg);  break;
-      case 'D':  duration   = atoll(optarg); break;
-      case 'B':  maxBatches = atoi(optarg);  break;
-      case 'E':  maxEntries = atoi(optarg);  break;
-      case 'c':  lcheck     = true;          break;
-      case 'M':  monPeriod  = atoi(optarg);  break;
-      case '1':  lcore1     = atoi(optarg);  break;
-      case '2':  lcore2     = atoi(optarg);  break;
-      case 'v':  ++lverbose;                 break;
+      case 'A':  ifAddr     = optarg;         break;
+      case 'S':  srvBase    = atoi(optarg);   break;
+      case 'C':  cltBase    = atoi(optarg);   break;
+      case 'i':  id         = atoi(optarg);   break;
+      case 'D':  duration   = atoll(optarg);  break;
+      case 'B':  maxBatches = atoi(optarg);   break;
+      case 'E':  maxEntries = atoi(optarg);   break;
+      case 'c':  lcheck     = true;           break;
+      case 'M':  monPeriod  = atoi(optarg);   break;
+      case '1':  lcore1     = atoi(optarg);   break;
+      case '2':  lcore2     = atoi(optarg);   break;
+      case 'v':  ++lverbose;                  break;
       case '?':
       case 'h':
         usage(argv[0], (char*)"Test event contributor");
@@ -810,15 +847,21 @@ int main(int argc, char **argv)
     }
   }
 
-  if (id >= max_peers)
+  if (id >= max_ctrbs)
   {
-    fprintf(stderr, "Contributor ID is out of range 0 - %d: %d\n", max_peers - 1, id);
+    fprintf(stderr, "Contributor ID %d is out of range 0 - %d\n", id, max_ctrbs - 1);
+    return 1;
+  }
+  if (srvBase + id > USHRT_MAX)
+  {
+    fprintf(stderr, "Server port is out of range 0 - %u: %d\n", USHRT_MAX, srvBase + id);
     return 1;
   }
 
-  char port[8];
-  std::vector<std::string> ebAddr;
-  std::vector<std::string> ebPort;
+  std::string srvPort(std::to_string(srvBase + id));
+
+  std::vector<std::string> cltAddr;
+  std::vector<std::string> cltPort;
   uint64_t builders = 0;
   if (optind < argc)
   {
@@ -828,26 +871,25 @@ int main(int argc, char **argv)
       char* builder = argv[optind];
       char* colon   = strchr(builder, ':');
       unsigned bid  = colon ? atoi(builder) : srcId++;
-      if (bid >= max_peers)
+      if (bid >= max_ctrbs)
       {
-        fprintf(stderr, "Builder ID is out of range 0 - %d: %d\n", max_peers - 1, bid);
+        fprintf(stderr, "Builder ID %d is out of range 0 - %d\n", bid, max_ctrbs - 1);
         return 1;
       }
-      if (portBase + bid > USHRT_MAX)
+      if (cltBase + bid + max_ctrbs > USHRT_MAX)
       {
-        fprintf(stderr, "Client port is out of range 0 - 65535: %d\n", portBase + bid);
+        fprintf(stderr, "Client port %d is out of range 0 - %d\n", cltBase + bid + max_ctrbs, USHRT_MAX);
         return 1;
       }
       builders |= 1ul << bid;
-      snprintf(port, sizeof(port), "%d", portBase + bid);
-      ebAddr.push_back(std::string(colon ? &colon[1] : builder));
-      ebPort.push_back(std::string(port));
+      cltAddr.push_back(std::string(colon ? &colon[1] : builder));
+      cltPort.push_back(std::string(std::to_string(cltBase + bid)));
     }
     while (++optind < argc);
   }
   else
   {
-    fprintf(stderr, "Builder address(s) is required\n");
+    fprintf(stderr, "Builder address(es) is required\n");
     return 1;
   }
 
@@ -861,24 +903,26 @@ int main(int argc, char **argv)
 
   ::signal( SIGINT, sigHandler );
 
-  const unsigned tmo(120000);           // mS
-  EbLfClient* client = new EbLfClient(ebAddr, ebPort);
-  if ( (ret = client->connect(id, tmo)) )  { delete client;  return ret; }
-
   pin_thread(pthread_self(), lcore1);
-  TstContribOutlet* outlet = new TstContribOutlet(*client, id, builders, duration, maxBatches, maxEntries, max_contrib_size);
+  TstContribOutlet* outlet = new TstContribOutlet(cltAddr, cltPort, id, builders, duration, maxBatches, maxEntries, max_contrib_size);
 
   pin_thread(pthread_self(), lcore2);
-  TstContribInlet*  inlet  = new TstContribInlet (*client, id, builders,           maxBatches, maxEntries, max_result_size);
+  TstContribInlet*  inlet  = new TstContribInlet (ifAddr, srvPort, id, builders,           maxBatches, maxEntries, max_result_size);
 
   printf("\nParameters of Contributor ID %d:\n", id);
   printf("  Batch duration:             %014lx = %ld uS\n", duration, duration);
   printf("  Batch pool depth:           %d\n", maxBatches);
   printf("  Max # of entries per batch: %d\n", maxEntries);
-  printf("  Max contribution size:      %zd, batch size: %zd\n",
-         max_contrib_size, outlet->maxBatchSize());
-  printf("  Max result       size:      %zd, batch size: %zd\n",
-         max_result_size,  inlet->maxBatchSize());
+  const unsigned ibMtu = 4096;
+  unsigned mtuCnt = (sizeof(Dgram) + maxEntries * max_contrib_size + ibMtu - 1) / ibMtu;
+  unsigned mtuRem = (sizeof(Dgram) + maxEntries * max_contrib_size) % ibMtu;
+  printf("  sizeof(Dgram):              %zd\n", sizeof(Dgram));
+  printf("  Max contribution size:      %zd, batch size: %zd, # MTUs: %d, last: %d / %d (%f%%)\n",
+         max_contrib_size, outlet->maxBatchSize(), mtuCnt, mtuRem, ibMtu, 100. * double(mtuRem) / double(ibMtu));
+  mtuCnt = (sizeof(Dgram) + maxEntries * max_result_size + ibMtu - 1) / ibMtu;
+  mtuRem = (sizeof(Dgram) + maxEntries * max_result_size) % ibMtu;
+  printf("  Max result       size:      %zd, batch size: %zd, # MTUs: %d, last: %d / %d (%f%%)\n",
+         max_result_size,  inlet->maxBatchSize(),  mtuCnt, mtuRem, ibMtu, 100. * double(mtuRem) / double(ibMtu));
   printf("  Monitoring period:          %d\n", monPeriod);
   printf("  Thread core numbers:        %d, %d\n", lcore1, lcore2);
   printf("\n");
@@ -897,12 +941,10 @@ int main(int argc, char **argv)
   outlet->shutdown();
   printf("\nShutting down Inlet...\n");
   inlet->shutdown();
-  client->shutdown();
 
   delete statsMon;
   delete inlet;
   delete outlet;
-  delete client;
 
   return ret;
 }

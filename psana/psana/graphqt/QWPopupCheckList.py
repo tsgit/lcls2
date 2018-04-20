@@ -5,6 +5,8 @@
 
 Usage::
 
+    # Test: python lcls2/psana/psana/graphqt/QWPopupCheckList.py
+
     # Import
     from psana.graphqt.QWPopupCheckList import QWPopupCheckList
 
@@ -21,37 +23,34 @@ Adopted for LCLS2 on 2018-02-16 by Mikhail Dubrovin
 """
 #------------------------------
 
-from PyQt5 import QtWidgets
+from PyQt5.QtWidgets import QDialog, QHBoxLayout, QVBoxLayout, QPushButton, QCheckBox
 from PyQt5.QtCore import Qt
 
 #------------------------------
-__version__ = "v2018-02-16"
-#------------------------------
 
-class QWPopupCheckList(QtWidgets.QDialog) :
+class QWPopupCheckList(QDialog) :
     """Gets list of item for checkbox GUI in format [['name1',false], ['name2',true], ..., ['nameN',false]], 
     and modify this list in popup dialog gui.
     """
-
-    def __init__(self, parent=None, list_in_out=[], win_title='Set check boxes'):
-        QtWidgets.QDialog.__init__(self,parent)
-        #self.setGeometry(20, 40, 500, 200)
-        self.setWindowTitle(win_title)
+    def __init__(self, parent=None, list_in_out=[], win_title=None):
+        QDialog.__init__(self,parent)
  
         #self.setModal(True)
+        if win_title is not None : self.setWindowTitle(win_title)
+
         self.list_in_out = list_in_out
 
-        self.vbox = QtWidgets.QVBoxLayout()
+        self.vbox = QVBoxLayout()
 
         self.make_gui_checkbox()
 
-        self.but_cancel = QtWidgets.QPushButton('&Cancel') 
-        self.but_apply  = QtWidgets.QPushButton('&Apply') 
+        self.but_cancel = QPushButton('&Cancel') 
+        self.but_apply  = QPushButton('&Apply') 
         
         self.but_cancel.clicked.connect(self.onCancel)
         self.but_apply.clicked.connect(self.onApply)
 
-        self.hbox = QtWidgets.QHBoxLayout()
+        self.hbox = QHBoxLayout()
         self.hbox.addWidget(self.but_cancel)
         self.hbox.addWidget(self.but_apply)
         self.hbox.addStretch(1)
@@ -70,7 +69,7 @@ class QWPopupCheckList(QtWidgets.QDialog) :
     def make_gui_checkbox(self) :
         self.dict_of_items = {}
         for k,[name,state] in enumerate(self.list_in_out) :        
-            cbx = QtWidgets.QCheckBox(name) 
+            cbx = QCheckBox(name) 
             if state : cbx.setCheckState(Qt.Checked)
             else     : cbx.setCheckState(Qt.Unchecked)
             #self.connect(cbx, QtCore.SIGNAL('stateChanged(int)'), self.onCBox)
@@ -155,18 +154,24 @@ class QWPopupCheckList(QtWidgets.QDialog) :
 
 if __name__ == "__main__" :
     import sys
-    app = QtWidgets.QApplication(sys.argv)
+    from PyQt5.QtWidgets import QApplication
+
+    app = QApplication(sys.argv)
     list_in = [['CSPAD1',True], ['CSPAD2x21', False], ['pNCCD1', True], ['Opal1', False], \
                ['CSPAD2',True], ['CSPAD2x22', False], ['pNCCD2', True], ['Opal2', False]]
     for name,state in list_in : print( '%s checkbox is in state %s' % (name.ljust(10), state))
-    w = QWPopupCheckList (None, list_in)
+    w = QWPopupCheckList(None, list_in)
+    #w.setGeometry(20, 40, 500, 200)
+    w.setWindowTitle('Set check boxes')
     #w.show()
     resp=w.exec_()
     print('resp=',resp)
-    print('QtWidgets.QDialog.Rejected: ', QtWidgets.QDialog.Rejected)
-    print('QtWidgets.QDialog.Accepted: ', QtWidgets.QDialog.Accepted)
+    print('QtWidgets.QDialog.Rejected: ', QDialog.Rejected)
+    print('QtWidgets.QDialog.Accepted: ', QDialog.Accepted)
 
-    for name,state in list_in : print( '%s checkbox is in state %s' % (name.ljust(10), state))
-    #app.exec_()
+    for name,state in list_in : print('%s checkbox is in state %s' % (name.ljust(10), state))
+
+    del w
+    del app
 
 #------------------------------
