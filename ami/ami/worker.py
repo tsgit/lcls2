@@ -13,66 +13,6 @@ from ami.graph import Graph, GraphConfigError, GraphRuntimeError
 from ami.comm import Ports, Collector, ResultStore
 from ami.data import MsgTypes, DataTypes, Transitions, Occurrences, Message, Datagram, Transition, StaticSource
 
-# may not need this later...
-import numpy as np
-
-def simple_tree(json):
-    """
-    Generate a dependency tree from a json input
-
-    Parameters
-    ----------
-    json : json object
-
-    Returns
-    -------
-    graph : dict
-        dict where the keys are operations, the value are upstream
-        (dependent) operations that should be done first
-    """
-    graph = {}
-    for op in json:
-        graph[op] = json[op]['inputs']
-    return graph
-
-
-def resolve_dependencies(dependencies):
-    """
-    Dependency resolver
-
-    Parameters
-    ----------
-    dependencies : dict
-        the values are the dependencies of their respective keys
-
-    Returns
-    -------
-    order : list
-        a list of the order in which to resolve dependencies
-    """
-
-    # this just makes sure there are no duplicate dependencies
-    d = dict( (k, set(dependencies[k])) for k in dependencies )
-
-    # output list
-    r = []
-
-    while d:
-
-        # find all nodes without dependencies (roots)
-        t = set(i for v in d.values() for i in v) - set(d.keys())
-
-        # and items with no dependencies (disjoint nodes)
-        t.update(k for k, v in d.items() if not v)
-
-        # both of these can be resolved
-        r.extend(t)
-
-        # remove resolved depedencies from the tree
-        d = dict(((k, v-t) for k, v in d.items() if v))
-
-    return r
-   
 
 class Worker(object):
     def __init__(self, idnum, src, collector_addr, graph_addr):
@@ -144,26 +84,6 @@ class Worker(object):
                 for dgram in msg.payload:
                     self.store.put_dgram(dgram)
 
-                """
-                # loop over operations in the correct order
-                for op in resolve_dependencies(simple_tree(self.graph)):
-
-                    # this takes care of "base" data (e.g. given by the DAQ)
-                    if op in self.store.namespace:
-                        continue
-
-                    # at the end of the executed code, inject outputs in to the feature store
-                    store_put_list = ['store.put("%s", %s)'%(output, output) for output in self.graph[op]['outputs']]
-                    store_put = '\n' + '; '.join(store_put_list)
-
-                    # generate the local & global namespaces for the execution of the graph operation
-                    loc = {'store': self.store}
-                    loc.update(self.store.namespace)
-                    glb = {"np" : np} # TODO be smarter :)
-
-                    # execute the operation code (graph is the json)
-                    exec(self.graph[op]['code'] + store_put, glb, loc)
-                """
                 try:
                     self.graph.execute()
                 except GraphRuntimeError as graph_err:
