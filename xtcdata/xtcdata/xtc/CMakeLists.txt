@@ -19,6 +19,9 @@ target_include_directories(xtc PUBLIC
 
 install(FILES
     Level.hh
+    NamesId.hh
+    NamesVec.hh
+    NameIndex.hh
     ShapesData.hh
     BlockDgram.hh
     Array.hh

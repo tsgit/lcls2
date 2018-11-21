@@ -5,7 +5,7 @@
 
 using namespace XtcData;
 
-Src::Src() : _log(std::numeric_limits<uint32_t>::max()), _phy(std::numeric_limits<uint32_t>::max())
+Src::Src() : _log(std::numeric_limits<uint32_t>::max()), _value(std::numeric_limits<uint32_t>::max())
 {
 }
 Src::Src(Level::Type level)
@@ -20,7 +20,7 @@ uint32_t Src::log() const
 }
 uint32_t Src::phy() const
 {
-    return _phy;
+    return _value;
 }
 Level::Type Src::level() const
 {
@@ -29,9 +29,9 @@ Level::Type Src::level() const
 
 bool Src::operator==(const Src& s) const
 {
-    return _phy == s._phy && _log == s._log;
+    return _value == s._value && _log == s._log;
 }
 bool Src::operator<(const Src& s) const
 {
-    return (_phy < s._phy) || ((_phy == s._phy) && (_log < s._log));
+    return (_value < s._value) || ((_value == s._value) && (_log < s._log));
 }
