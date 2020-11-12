@@ -7,7 +7,7 @@ import pathlib
 
 from psana.dgrammanager import DgramManager
 
-from psana.psexp import PrometheusManager
+from psana.psexp import *
 import threading
 import logging
 from psana import dgram
@@ -79,6 +79,7 @@ class DataSourceBase(abc.ABC):
         
         self.prom_man = PrometheusManager(os.environ['PS_PROMETHEUS_JOBID'])
         self.dsparms  = DsParms(self.batch_size, self.max_events, self.filter, self.destination, self.prom_man) 
+        DsHelper(self)
 
     @abc.abstractmethod
     def runs(self):
@@ -88,6 +89,9 @@ class DataSourceBase(abc.ABC):
     #@abc.abstractmethod
     #def steps(self):
     #    retur
+    
+    def __reduce__(self):
+        return (ds_from_id, (self.id,))
     
     def _get_run_files(self, run_num):
         smd_dir = os.path.join(self.xtc_path, 'smalldata')

@@ -12,7 +12,6 @@ import time
 class InvalidEventBuilderCores(Exception): pass
 
 
-
 class RunParallel(Run):
     """ Yields list of events from multiple smd/bigdata files using > 3 cores."""
 

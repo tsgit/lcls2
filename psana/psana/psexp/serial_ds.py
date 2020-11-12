@@ -20,6 +20,9 @@ class SerialDataSource(DataSourceBase):
         self.dm = DgramManager(self.xtc_files, configs=self._configs)
         # prepare comms for running SmallData
         self.smalldata_obj = SmallData(**self.smalldata_kwargs)
+
+    def analyze(self, **kwargs):
+        return
     
     def runs(self):
         events = Events(self._configs, self.dm, self.prom_man, filter_callback=self.filter, smdr_man=self.smdr_man)

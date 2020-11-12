@@ -17,7 +17,7 @@ if mode == 'mpi':
         import mpi4py.MPI
         mpi4py.MPI.COMM_WORLD.Abort(1)
         sys.__excepthook__(exctype, value, traceback)
-    sys.excepthook = global_except_hook
+    #sys.excepthook = global_except_hook
 
 # for debugging...
 #import logging
@@ -30,20 +30,32 @@ def filter_fn(evt):
 
 xtc_dir = os.path.join(os.environ.get('TEST_XTC_DIR', os.getcwd()),'.tmp')
 
+xtc_dir = os.path.join(os.environ.get('HOME'), 'tmp', 'tworuns', 'data')
+
 ds = DataSource(exp='xpptut13', run=1, dir=xtc_dir, filter=filter_fn)
 n_events = 0
-def event_fn(event, det):
+#def event_fn(event, det):
+#    global n_events
+#    padarray = vals.padarray
+#    assert(np.array_equal(det.raw.calib(event),np.stack((padarray,padarray,padarray,padarray))))
+#    n_events += 1
+def event_fn(evt, run):
     global n_events
-    padarray = vals.padarray
-    assert(np.array_equal(det.raw.calib(event),np.stack((padarray,padarray,padarray,padarray))))
     n_events += 1
+    print(f"in event_fn run={run.runnum} evt={evt.timestamp} service={evt.service()}")
 
-for run in ds.runs():
-    det = run.Detector('xppcspad')
-    edet = run.Detector('HX2:DVD:GCC:01:PMON')
-    assert run.expt == 'xpptut15'
-    assert run.runnum == 14
-    run.analyze(event_fn=event_fn, det=det)
+
+def run_fn(run):
+    print(f"exp={run.expt} runnum={run.runnum}")
+    return
+
+ds.analyze(run_fn=run_fn, event_fn=event_fn)
+#for run in ds.runs():
+#    det = run.Detector('xppcspad')
+#    edet = run.Detector('HX2:DVD:GCC:01:PMON')
+#    assert run.expt == 'xpptut15'
+#    assert run.runnum == 14
+#    run.analyze(event_fn=event_fn, det=det)
 
 if mode == 'legion':
     import pygion

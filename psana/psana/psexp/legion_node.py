@@ -12,53 +12,61 @@ else:
         return fn
 
 from psana.psexp import EventBuilderManager, TransitionId, Events
+from psana.psexp.run import RunLegion
 
-def smd_chunks(run):
-    for smd_chunk, update_chunk in run.smdr_man.chunks():
-        yield smd_chunk
+def smd_chunks(ds):
+    for smd_data in ds.smdr_man.chunks():
+        yield smd_data
 
 @task(inner=True)
-def run_smd0_task(run):
+def run_smd0_task(ds):
     global_procs = pygion.Tunable.select(pygion.Tunable.GLOBAL_PYS).get()
 
-    for i, smd_chunk in enumerate(smd_chunks(run)):
-        run_smd_task(smd_chunk, run, point=i)
+    for i, smd_data in enumerate(smd_chunks(ds)):
+        run_eb_task(smd_data, ds, point=i)
     # Block before returning so that the caller can use this task's future for synchronization
     pygion.execution_fence(block=True)
-    run.close() # FIXME: Check with Elliott if this is a good place to close all open files
 
-def smd_batches(smd_chunk, run):
-    eb_man = EventBuilderManager(smd_chunk, run)
-    for smd_batch_dict, step_batch_dict in eb_man.batches():
-        smd_batch, _ = smd_batch_dict[0]
-        yield smd_batch
+def eb_batches(smd_chunk, ds):
+    eb_man = EventBuilderManager(smd_chunk, ds._configs, ds.dsparms) 
+    for eb_data in eb_man.batches():
+        yield eb_data
 
 @task(inner=True)
-def run_smd_task(smd_chunk, run):
-    for i, smd_batch in enumerate(smd_batches(smd_chunk, run)):
-        run_bigdata_task(smd_batch, run, point=i)
+def run_eb_task(smd_data, ds):
+    smd_chunk, step_chunk, calibconst_pkt = smd_data
+    for i, eb_data in enumerate(eb_batches(smd_chunk, ds)):
+        run_bigdata_task(eb_data, ds, point=i)
 
-def batch_events(smd_batch, run):
+def batch_events(smd_batch, ds):
     batch_iter = iter([smd_batch, bytearray()])
     def get_smd():
         for this_batch in batch_iter:
             return this_batch
 
-    events = Events(run, get_smd=get_smd)
+    events  = Events(ds._configs, ds.dm, ds.dsparms.prom_man, 
+            filter_callback = ds.dsparms.filter, 
+            get_smd         = get_smd)
     for evt in events:
-        if evt.service() != TransitionId.L1Accept: continue
         yield evt
 
 @task
-def run_bigdata_task(batch, run):
-    for evt in batch_events(batch, run):
-        run.event_fn(evt, run.det)
+def run_bigdata_task(eb_data, ds):
+    smd_batch_dict, step_batch_dict = eb_data
+    smd_batch, _ = smd_batch_dict[0]
+    for evt in batch_events(smd_batch, ds):
+        if evt.service() == TransitionId.BeginRun:
+            run = RunLegion(evt, ds._configs, ds.dsparms)
+            ds.run_fn(run)
+            ds.run = run
+        if evt.service() != TransitionId.L1Accept:
+            continue
+        ds.event_fn(evt, ds.run)
 
-run_to_process = []
-def analyze(run, event_fn=None, start_run_fn=None, det=None):
-    run.event_fn = event_fn
-    run.start_run_fn = start_run_fn
-    run.det = det
+ds_to_process = []
+def analyze(ds, run_fn=None, event_fn=None):
+    ds.run_fn   = run_fn
+    ds.event_fn = event_fn
     if pygion.is_script:
         num_procs = pygion.Tunable.select(pygion.Tunable.GLOBAL_PYS).get()
 
@@ -67,13 +75,13 @@ def analyze(run, event_fn=None, start_run_fn=None, det=None):
         global_task_registration_barrier = pygion.c.legion_phase_barrier_advance(pygion._my.ctx.runtime, pygion._my.ctx.context, bar)
         pygion.c.legion_phase_barrier_wait(pygion._my.ctx.runtime, pygion._my.ctx.context, bar)
 
-        return run_smd0_task(run)
+        return run_smd0_task(ds)
     else:
-        run_to_process.append(run)
+        ds_to_process.append(ds)
     
 
 if pygion is not None and not pygion.is_script:
     @task(top_level=True)
     def legion_main():
-        for run in run_to_process:
-            run_smd0_task(run, point=0)
+        for ds in ds_to_process:
+            run_smd0_task(ds, point=0)
