@@ -161,7 +161,7 @@ namespace psalg {
         printf("Received tr buffer %d [%d]\n",i,_trfd);
 #endif
         if ( (i>=0) && (i<myMsg.numberOfBuffers())) {
-          XtcData::Dgram* dg = (XtcData::Dgram*) (_shm + (myMsg.sizeOfBuffers() * i));
+            XtcData::Dgram* dg = (XtcData::Dgram*) (_shm + (size_t(myMsg.sizeOfBuffers()) * i));
 #ifdef DBUG2
           printf("*** received transition id %d (%s)\n",dg->service(), XtcData::TransitionId::name(dg->service()));
 #endif
