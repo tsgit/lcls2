@@ -273,3 +273,15 @@ class epix_raw_2_0_1(DetectorImpl):
     def __call__(self, evt) -> Array2d:
         """Alias for self.raw(evt)"""
         return self.array(evt)
+
+class epixquad_raw_2_0_0(DetectorImpl):
+    def __init__(self, *args):
+        super(epixquad_raw_2_0_0,self).__init__(*args)
+        self._add_fields()
+
+    def _info(self,evt):
+        # check for missing data
+        segments = self._segments(evt)
+        if segments is None: return None
+
+        return segments[0]
