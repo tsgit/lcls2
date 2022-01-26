@@ -32,14 +32,14 @@ class BlueskyScan:
         self.daqState_cv = threading.Condition()
         self.stepDone_cv = threading.Condition()
         self.stepDone = 0
-        self.comm_thread.start()
-        self.mon_thread.start()
         self.verbose = args.v
         self.detname = args.detname
         self.scantype = args.scantype
         self.step_done = threading.Event()
         self.step_count = 1
         self.platform = args.p
+        self.comm_thread.start()
+        self.mon_thread.start()
 
         if args.g is None:
             self.groupMask = 1 << self.platform
@@ -70,13 +70,54 @@ class BlueskyScan:
     def daq_communicator_thread(self):
         logging.debug('*** daq_communicator_thread')
         while True:
+
+            # allow user to override step count
+            for motor in self.motors:
+                if motor.name == ControlDef.STEP_VALUE:
+                    self.step_count = int(motor.position)
+                    logging.debug(f'override: step count = {self.step_count}')
+                    break
+
+            my_data = {}
+
+            # record step_count and step_docstring
+            my_data.update({'step_count': self.step_count})
+            docstring = f'{{"detname": "{self.detname}", "scantype": "{self.scantype}", "step": {self.step_count}}}'
+            my_data.update({'step_docstring': docstring})
+
+            # record motor positions
+            for motor in self.motors:
+                if motor.name == ControlDef.STEP_VALUE:
+                    continue
+                my_data.update({motor.name: motor.position})
+
+            data = {
+                "motors":           my_data,
+                "timestamp":        0,
+                "detname":          self.detname,
+                "dettype":          "scan",
+                "scantype":         self.scantype,
+                "serial_number":    "1234",
+                "alg_name":         "raw",
+                "alg_version":      [1,0,0]
+            }
+
+            configureBlock = self.getBlock(transition="Configure", data=data)
+            beginStepBlock = self.getBlock(transition="BeginStep", data=data)
+
             state = self.pull_socket.recv().decode("utf-8")
             logging.debug('*** received %s' % state)
-            if state in ('connected', 'starting'):
+            ##if state in ('connected', 'starting'):
+            if state in ('configured', 'starting'):
                 # send 'daqstate(state)' and wait for complete
                 # we can block here since we are not in the bluesky
                 # event loop
-                errMsg = self.control.setState(state)
+
+                if state=='configured':
+                     errMsg = self.control.setState(state,{'configure':{'NamesBlockHex':configureBlock}})
+                else:
+                     errMsg = self.control.setState(state)
+
                 if errMsg is not None:
                     logging.error('%s' % errMsg)
                     continue
@@ -91,44 +132,9 @@ class BlueskyScan:
                 # scan values for the daq to record to xtc2).
                 # normally should block on "complete" from the daq here.
 
-                # allow user to override step count
-                for motor in self.motors:
-                    if motor.name == ControlDef.STEP_VALUE:
-                        self.step_count = int(motor.position)
-                        logging.debug(f'override: step count = {self.step_count}')
-                        break
-
-                my_data = {}
-
-                # record step_count and step_docstring
-                my_data.update({'step_count': self.step_count})
-                docstring = f'{{"detname": "{self.detname}", "scantype": "{self.scantype}", "step": {self.step_count}}}'
-                my_data.update({'step_docstring': docstring})
-
-                # record motor positions
-                for motor in self.motors:
-                    if motor.name == ControlDef.STEP_VALUE:
-                        continue
-                    my_data.update({motor.name: motor.position})
-
-                data = {
-                  "motors":           my_data,
-                  "timestamp":        0,
-                  "detname":          self.detname,
-                  "dettype":          "scan",
-                  "scantype":         self.scantype,
-                  "serial_number":    "1234",
-                  "alg_name":         "raw",
-                  "alg_version":      [1,0,0]
-                }
-
-                configureBlock = self.getBlock(transition="Configure", data=data)
-                beginStepBlock = self.getBlock(transition="BeginStep", data=data)
-
                 # set DAQ state
                 errMsg = self.control.setState('running',
-                    {'configure':   {'NamesBlockHex':configureBlock},
-                     'beginstep':   {'ShapesDataBlockHex':beginStepBlock},
+                   { 'beginstep':   {'ShapesDataBlockHex':beginStepBlock},
                      'enable':      {'readout_count':self.readoutCount, 'group_mask':self.groupMask}})
                 if errMsg is not None:
                     logging.error('%s' % errMsg)
@@ -210,7 +216,8 @@ class BlueskyScan:
         return (self.read_configuration(),self.read_configuration())
 
     def _set_connected(self):
-        self.push_socket.send_string('connected')
+        ##self.push_socket.send_string('connected')
+        self.push_socket.send_string('configured')
         # wait for complete. is this a coroutine, so we shouldn't block?
         self.ready.wait()
         self.ready.clear()

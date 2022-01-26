@@ -631,4 +631,5 @@ def epixquad_enable(base):
     epixquad_external_trigger(base)
 
 def epixquad_disable(base):
+    time.sleep(0.005)  # Make sure last event is complete before RdoutEn.set(0)
     epixquad_internal_trigger(base)
