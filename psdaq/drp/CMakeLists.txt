@@ -27,6 +27,8 @@ add_executable(drp
     AreaDetector.cc
     Digitizer.cc
     EpixQuad.cc
+    TimingDef.cc
+    TimingBEB.cc
     TimingSystem.cc
     TimeTool.cc
     Wave8.cc
