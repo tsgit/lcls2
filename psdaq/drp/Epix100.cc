@@ -101,13 +101,13 @@ void Epix100::_connect(PyObject* mbytes)
 
 unsigned Epix100::enable(XtcData::Xtc& xtc, const nlohmann::json& info)
 {
-    // monStreamDisable();
+    monStreamDisable();
     return 0;
 }
 
 unsigned Epix100::disable(XtcData::Xtc& xtc, const nlohmann::json& info)
 {
-    // monStreamEnable();
+    monStreamEnable();
     return 0;
 }
 
@@ -186,7 +186,7 @@ void Epix100::_event(XtcData::Xtc& xtc, std::vector< XtcData::Array<uint8_t> >& 
     Array<uint16_t> aframe = cd.allocate<uint16_t>(Epix100PanelDef::raw, shape);
 
     cpocount++;
-    if (cpocount%100==0) {
+    if (cpocount%10==0) {
         printf("*** event %d subframes.size: %d\n",cpocount,subframes.size());
         for (unsigned i=0; i<subframes.size(); i++) {
             printf("*** subframes[%d].num_elem(): %d\n",i,subframes[i].num_elem());
