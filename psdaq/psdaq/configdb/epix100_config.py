@@ -113,7 +113,9 @@ def epix100_init(arg,dev='/dev/datadev_0',lanemask=1,xpmpv=None,timebase="186M",
     pbase.DevPcie.Application.EventBuilder.Bypass.set(base['bypass'])
 
     time.sleep(1)
-    epix100_internal_trigger(base)
+    # should ideally do this at the beginning, but it's currently
+    # broken (see comment inside this routine).
+    #epix100_internal_trigger(base)
     return base
 
 def epix100_init_feb(slane=None,schan=None):
@@ -191,7 +193,7 @@ def epix100_config(base,connect_str,cfgtype,detname,detsegm,rog):
     cbase.ePix100aFPGA.EpixFpgaRegisters.RunTriggerEnable.set(True)
     cbase.ePix100aFPGA.EpixFpgaRegisters.DaqTriggerEnable.set(True)
     cbase.ePix100aFPGA.EpixFpgaRegisters.PgpTrigEn.set(True)
-    cbase.ePix100aFPGA.EpixFpgaRegisters.AutoRunPeriod.set(0x1046aa) # 120Hz
+    cbase.ePix100aFPGA.EpixFpgaRegisters.AutoRunPeriod.set(0x1046aa) # ~120Hz
 
     # we had difficulty moving the triggers early enough with the
     # the default setting of this register.  could also put this in yml file.
@@ -264,41 +266,47 @@ def epix100_update(update):
     return json.dumps(newcfg)
 
 def epix100_internal_trigger(base):
-    #  Disable frame readout 
     pbase = base['pci']
-    #pbase.DevPcie.Application.EventBuilder.Bypass.set(0x3c)
-    #return
 
     #  Switch to internal triggering
     print('=== internal triggering ===')
+
+    # from dionisio and cpo, Feb. 24, 2022
+    # tried various combinations of AutoEnable,Daq/RunTriggerEnable.
+    # this is the best we found, but after first switching to
+    # internal trigger the camera only sent up 40 bytes, and intermittently
+    # disable phase 2 started failing.  Tried setting bypass to ignore camera
+    # data, but didn't help.  Maybe could do something with BlowOff?
+
+    # ignore camera data getting sent for reasons we don't understand?
+    #pbase.DevPcie.Application.EventBuilder.Bypass.set(0x3c)
     cbase = base['cam']
-    cbase.ePix100aFPGA.EpixFpgaRegisters.enable.set(1)
-    cbase.ePix100aFPGA.EpixFpgaRegisters.PgpTrigEn.set(0)
+    #cbase.ePix100aFPGA.EpixFpgaRegisters.enable.set(1)
     # dionisio says this turns off the camera sending data over pgp
-    cbase.ePix100aFPGA.EpixFpgaRegisters.DaqTriggerEnable.set(0)
-    cbase.ePix100aFPGA.EpixFpgaRegisters.RunTriggerEnable.set(1)
-    cbase.ePix100aFPGA.EpixFpgaRegisters.AutoDaqEnable.set(1)
+    #cbase.ePix100aFPGA.EpixFpgaRegisters.DaqTriggerEnable.set(1)
+    #cbase.ePix100aFPGA.EpixFpgaRegisters.RunTriggerEnable.set(1)
+    #cbase.ePix100aFPGA.EpixFpgaRegisters.AutoDaqEnable.set(0)
     cbase.ePix100aFPGA.EpixFpgaRegisters.AutoRunEnable.set(1)
-    cbase.ePix100aFPGA.EpixFpgaRegisters.enable.set(0)
+    #cbase.ePix100aFPGA.EpixFpgaRegisters.enable.set(0)
 
 def epix100_external_trigger(base):
     #  Switch to external triggering
     print('=== external triggering with bypass {} ==='.format(base['bypass']))
     cbase = base['cam']
+    pbase = base['pci'] 
+    #pbase.DevPcie.Application.EventBuilder.Bypass.set(base['bypass'])
     cbase.ePix100aFPGA.EpixFpgaRegisters.enable.set(1)
     cbase.ePix100aFPGA.EpixFpgaRegisters.AutoRunEnable.set(0)
     cbase.ePix100aFPGA.EpixFpgaRegisters.AutoDaqEnable.set(0)
-    cbase.ePix100aFPGA.EpixFpgaRegisters.PgpTrigEn.set(1)
     cbase.ePix100aFPGA.EpixFpgaRegisters.DaqTriggerEnable.set(1)
     cbase.ePix100aFPGA.EpixFpgaRegisters.RunTriggerEnable.set(1)
-    cbase.ePix100aFPGA.EpixFpgaRegisters.enable.set(0)
+    #cbase.ePix100aFPGA.EpixFpgaRegisters.enable.set(0)
     #  Enable frame readout
     time.sleep(0.01)  # make sure all auto triggers are done
-    pbase = base['pci']
-    pbase.DevPcie.Application.EventBuilder.Bypass.set(base['bypass'])
 
 def epix100_enable(base):
     epix100_external_trigger(base)
 
 def epix100_disable(base):
     epix100_internal_trigger(base)
+    pass
