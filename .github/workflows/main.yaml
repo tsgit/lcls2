@@ -3,17 +3,18 @@ on:
   push:
     branches:
       - master
+      - testing
 jobs:
   run-tests-macos:
     runs-on: macos-latest
     env:
-        CONDA_ENV: myrel 
+        CONDA_ENV: myrel
         TRAVIS_OS_NAME: osx
     steps:
       - name: checkout
         uses: actions/checkout@v3
       - name: setup python on macos
-        uses: actions/setup-python@v2
+        uses: actions/setup-python@v4
         with:
           python-version: 3.9
       - name: conda installation
@@ -32,4 +33,5 @@ jobs:
       - name: checkout
         uses: actions/checkout@v3
       - name: tests on centos7
+        timeout-minutes: 30
         run: bash -l ./run_travis.sh "$TRAVIS_OS_NAME"
