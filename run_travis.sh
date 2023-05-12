@@ -16,6 +16,8 @@ if [[ $OS == linux ]]; then
   export PYTHONPATH="$PWD/install/lib/python$PYVER/site-packages"
   export TESTRELDIR="$PWD/install"
 
+  pip install pytest-timeout
+  pip install requests-cache
   ./build_all.sh -p install
   pytest psana/psana/tests
   pytest psdaq/psdaq/tests
@@ -47,6 +49,8 @@ elif [[ $OS == osx ]]; then
   PYVER=$(python -c "import sys; print(str(sys.version_info.major)+'.'+str(sys.version_info.minor))")
   export PYTHONPATH="$PWD/install/lib/python$PYVER/site-packages"
 
+  pip install pytest-timeout
+  pip install requests-cache
   ./build_all.sh -d -p install
   pytest psana/psana/tests
 else
